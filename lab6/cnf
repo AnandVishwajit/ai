@@ -1,0 +1,175 @@
+def to_string(expr):
+    """Converts a tuple-based expression to a human-readable string."""
+    if isinstance(expr, str):
+        return expr
+    op = expr[0]
+    args = [to_string(arg) for arg in expr[1:]]
+    if op == 'not':
+        return f"~{args[0]}"
+    elif op == 'and':
+        return f"({' ^ '.join(args)})"
+    elif op == 'or':
+        return f"({' v '.join(args)})"
+    elif op == 'implies':
+        return f"({args[0]} -> {args[1]})"
+    elif op == 'iff':
+        return f"({args[0]} <-> {args[1]})"
+    return str(expr)
+
+def eliminate_implications_and_equivalences(expr):
+    """
+    Transforms `A -> B` to `(~A v B)` and `A <-> B` to `(~A v B) ^ (~B v A)`.
+    Recursively applies this transformation.
+    """
+    if isinstance(expr, str): # Literal
+        return expr
+
+    op = expr[0]
+    if op == 'implies': # A -> B becomes (~A v B)
+        arg1 = eliminate_implications_and_equivalences(expr[1])
+        arg2 = eliminate_implications_and_equivalences(expr[2])
+        return ('or', ('not', arg1), arg2)
+    elif op == 'iff': # A <-> B becomes (~A v B) ^ (~B v A)
+        arg1 = eliminate_implications_and_equivalences(expr[1])
+        arg2 = eliminate_implications_and_equivalences(expr[2])
+        return ('and', ('or', ('not', arg1), arg2), ('or', ('not', arg2), arg1))
+    else: # Recurse for 'and', 'or', 'not'
+        return (op, *[eliminate_implications_and_equivalences(arg) for arg in expr[1:]])
+
+def move_negations_inwards(expr):
+    """
+    Applies De Morgan's laws and eliminates double negations.
+    Recursively applies this transformation.
+    """
+    if isinstance(expr, str): # Literal
+        return expr
+    
+    op = expr[0]
+    
+    if op == 'not':
+        sub_expr = expr[1]
+        if isinstance(sub_expr, str): # Already a literal: ~P
+            return expr
+        
+        sub_op = sub_expr[0]
+        sub_args = sub_expr[1:]
+        
+        if sub_op == 'not': # ~(~A) => A
+            return move_negations_inwards(sub_args[0])
+        elif sub_op == 'and': # ~(A ^ B) => ~A v ~B
+            return ('or', move_negations_inwards(('not', sub_args[0])), move_negations_inwards(('not', sub_args[1])))
+        elif sub_op == 'or': # ~(A v B) => ~A ^ ~B
+            return ('and', move_negations_inwards(('not', sub_args[0])), move_negations_inwards(('not', sub_args[1])))
+        else: # Should not happen if implications are already removed
+            return ('not', move_negations_inwards(sub_expr)) # Fallback/robustness
+    
+    # For 'and' and 'or' operations, recursively apply to arguments
+    return (op, *[move_negations_inwards(arg) for arg in expr[1:]])
+
+def distribute_or_over_and(expr):
+    """
+    Distributes 'or' over 'and': `A v (B ^ C)` becomes `(A v B) ^ (A v C)`.
+    Recursively applies this transformation.
+    """
+    if isinstance(expr, str) or (isinstance(expr, tuple) and expr[0] == 'not' and isinstance(expr[1], str)):
+        return expr # Literal
+    
+    op = expr[0]
+    # First, recurse on arguments to ensure their sub-expressions are distributed
+    args = [distribute_or_over_and(arg) for arg in expr[1:]]
+
+    if op == 'and':
+        return (op, *args)
+    
+    elif op == 'or':
+        # Find if any argument is an 'and' expression that needs distribution
+        and_arg_index = -1
+        for i, arg in enumerate(args):
+            if isinstance(arg, tuple) and arg[0] == 'and':
+                and_arg_index = i
+                break
+        
+        if and_arg_index == -1: # No 'and' found within this 'or', it's a clause.
+            return ('or', *args) if len(args) > 1 else args[0] if args else None
+
+        # Found an 'and' term within an 'or' e.g., A v (B ^ C)
+        and_term = args[and_arg_index] # This is ('and', B, C)
+        remaining_or_terms = args[:and_arg_index] + args[and_arg_index+1:]
+        
+        B_component = and_term[1]
+        C_component = and_term[2]
+
+        # Construct (A v B) and (A v C) where A is the 'or' of all remaining_or_terms
+        
+        # Create the argument lists for the new OR clauses (A v B) and (A v C)
+        left_or_arg_list = [B_component] + remaining_or_terms
+        right_or_arg_list = [C_component] + remaining_or_terms
+        
+        # Form the new OR expressions, handling cases where a list might be empty or single
+        new_left_or_expr = ('or', *left_or_arg_list) if len(left_or_arg_list) > 1 else left_or_arg_list[0]
+        new_right_or_expr = ('or', *right_or_arg_list) if len(right_or_arg_list) > 1 else right_or_arg_list[0]
+        
+        # Recursively apply distribution to the newly formed (AND of ORs) expression.
+        # This handles cases where the new OR clauses themselves might need further distribution.
+        return distribute_or_over_and(('and', new_left_or_expr, new_right_or_expr))
+    
+    return expr # Should ideally not be reached if all operators are handled
+
+def convert_to_cnf(expr):
+    """Main function to convert a propositional logic expression to CNF."""
+    print(f"Original expression: {to_string(expr)}\n")
+
+    # Step 1: Eliminate implications and equivalences
+    expr_step1 = eliminate_implications_and_equivalences(expr)
+    print(f"Step 1 (Eliminate Impl/Iff): {to_string(expr_step1)}")
+    
+    # Step 2: Move negations inwards
+    expr_step2 = move_negations_inwards(expr_step1)
+    print(f"Step 2 (Move Negations Inwards): {to_string(expr_step2)}")
+    
+    # Step 3: Distribute OR over AND (repeat until no more distributions needed)
+    # This loop is necessary because one distribution might create new opportunities for others.
+    expr_step3 = expr_step2
+    while True:
+        prev_expr_str = to_string(expr_step3)
+        expr_step3 = distribute_or_over_and(expr_step3)
+        if to_string(expr_step3) == prev_expr_str: # No more changes after a pass
+            break
+    print(f"Step 3 (Distribute OR over AND): {to_string(expr_step3)}\n")
+    
+    return expr_step3
+
+# --- Example Usage --- 
+# Representation:
+# Propositional variables are strings (e.g., 'P', 'Q')
+# Operators are tuples: ('op', arg1, arg2, ...)
+# 'not': ('not', P)
+# 'and': ('and', P, Q)
+# 'or': ('or', P, Q)
+# 'implies': ('implies', P, Q)  (P -> Q)
+# 'iff': ('iff', P, Q)        (P <-> Q)
+
+print("Example 1: (A and B) or C")
+expr1 = ('or', ('and', 'A', 'B'), 'C')
+cnf1 = convert_to_cnf(expr1)
+print(f"CNF of Example 1: {to_string(cnf1)}\n" + "-"*50 + "\n")
+
+print("Example 2: (P -> Q) and R")
+expr2 = ('and', ('implies', 'P', 'Q'), 'R')
+cnf2 = convert_to_cnf(expr2)
+print(f"CNF of Example 2: {to_string(cnf2)}\n" + "-"*50 + "\n")
+
+print("Example 3: P -> (Q and S)")
+expr3 = ('implies', 'P', ('and', 'Q', 'S'))
+cnf3 = convert_to_cnf(expr3)
+print(f"CNF of Example 3: {to_string(cnf3)}\n" + "-"*50 + "\n")
+
+print("Example 4: ~(P or Q) -> R")
+expr4 = ('implies', ('not', ('or', 'P', 'Q')), 'R')
+cnf4 = convert_to_cnf(expr4)
+print(f"CNF of Example 4: {to_string(cnf4)}\n" + "-"*50 + "\n")
+
+print("Example 5: (A <-> B) or C")
+expr5 = ('or', ('iff', 'A', 'B'), 'C')
+cnf5 = convert_to_cnf(expr5)
+print(f"CNF of Example 5: {to_string(cnf5)}\n" + "-"*50 + "\n")
